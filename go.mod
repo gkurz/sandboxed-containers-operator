@@ -4,6 +4,7 @@ go 1.18
 
 require (
 	github.com/ashcrow/osrelease v0.0.0-20180626175927-9b292693c55c
+	github.com/BurntSushi/toml v0.3.1
 	github.com/coreos/ignition/v2 v2.9.0
 	github.com/go-logr/logr v1.2.3
 	github.com/onsi/ginkgo/v2 v2.1.6

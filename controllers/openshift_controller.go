@@ -16,6 +16,7 @@ limitations under the License.
 package controllers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -27,11 +28,13 @@ import (
 
 	"k8s.io/apimachinery/pkg/labels"
 
+	"github.com/BurntSushi/toml"
 	ignTypes "github.com/coreos/ignition/v2/config/v3_2/types"
 	"github.com/go-logr/logr"
 	secv1 "github.com/openshift/api/security/v1"
 	mcfgv1 "github.com/openshift/machine-config-operator/pkg/apis/machineconfiguration.openshift.io/v1"
 	kataconfigurationv1 "github.com/openshift/sandboxed-containers-operator/api/v1"
+	"github.com/vincent-petithory/dataurl"
 	corev1 "k8s.io/api/core/v1"
 	nodeapi "k8s.io/api/node/v1"
 	k8serrors "k8s.io/apimachinery/pkg/api/errors"
@@ -68,6 +71,7 @@ const (
 	dashboard_configmap_name      = "grafana-dashboard-sandboxed-containers"
 	dashboard_configmap_namespace = "openshift-config-managed"
 	container_runtime_config_name = "kata-crio-config"
+	crio_loglevel_dropin_path     = "/etc/crio/crio.conf.d/01-kata-logLevel"
 )
 
 // +kubebuilder:rbac:groups=kataconfiguration.openshift.io,resources=kataconfigs;kataconfigs/finalizers,verbs=get;list;watch;create;update;patch;delete
@@ -434,6 +438,63 @@ func (r *KataConfigOpenShiftReconciler) newMCPforCR() *mcfgv1.MachineConfigPool 
 	return mcp
 }
 
+type tomlConfigCRIOLogLevel struct {
+	Crio struct {
+		Runtime struct {
+			LogLevel string `toml:"log_level,omitempty"`
+		} `toml:"runtime"`
+	} `toml:"crio"`
+}
+
+// strToPtr converts the input string to a pointer to itself
+func strToPtr(s string) *string {
+	return &s
+}
+
+func (r *KataConfigOpenShiftReconciler) createCrioLogLevelFile(desiredLogLevel string) *ignTypes.File {
+	if desiredLogLevel == "" {
+		return nil
+	}
+
+	validLogLevels := map[string]bool{
+		"error": true,
+		"fatal": true,
+		"panic": true,
+		"warn":  true,
+		"info":  true,
+		"debug": true,
+		"trace": true,
+	}
+	if !validLogLevels[desiredLogLevel] {
+		r.Log.Info("Ignoring invalid logLevel %q, must be one of error, fatal, panic, warn, info, debug, or trace", desiredLogLevel)
+		return nil
+	}
+
+	tomlConf := tomlConfigCRIOLogLevel{}
+	tomlConf.Crio.Runtime.LogLevel = desiredLogLevel
+
+	var data bytes.Buffer
+	encoder := toml.NewEncoder(&data)
+	if err := encoder.Encode(tomlConf); err != nil {
+		r.Log.Error(err, "Failed to create drop-in config for CRIO. Ignoring logLevel.")
+		return nil
+	}
+
+	mode := 0o644
+	return &ignTypes.File{
+		FileEmbedded1: ignTypes.FileEmbedded1{
+			Mode: &mode,
+			Contents: ignTypes.Resource{
+				Source: strToPtr(dataurl.EncodeBytes(data.Bytes())),
+				Compression: strToPtr(""),
+			},
+		},
+		Node: ignTypes.Node{
+			Path: crio_loglevel_dropin_path,
+		},
+	}
+}
+
 func (r *KataConfigOpenShiftReconciler) newMCForCR(machinePool string) (*mcfgv1.MachineConfig, error) {
 	r.Log.Info("Creating MachineConfig for Custom Resource")
 
@@ -441,6 +502,14 @@ func (r *KataConfigOpenShiftReconciler) newMCForCR(machinePool string) (*mcfgv1.
 		Ignition: ignTypes.Ignition{
 			Version: "3.2.0",
 		},
+	}
+
+	if logLevelFile := r.createCrioLogLevelFile(r.kataConfig.Spec.LogLevel); logLevelFile != nil {
+		ic.Storage = ignTypes.Storage{
+			Files: []ignTypes.File{
+				*logLevelFile,
+			},
+		}
 	}
 
 	icb, err := json.Marshal(ic)
