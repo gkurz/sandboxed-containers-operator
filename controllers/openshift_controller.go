@@ -88,6 +88,10 @@ const (
 	kataRuntimeClassCpuOverhead = "0.25"
 	// We need a higher value than upstream (see https://github.com/openshift/sandboxed-containers-operator/pull/84)
 	kataRuntimeClassMemOverhead = "350Mi"
+
+	kataNvidiaGPURuntimeClassName        = "kata-nvidia-gpu"
+	kataNvidiaGPURuntimeClassCpuOverhead = "0.25"
+	kataNvidiaGPURuntimeClassMemOverhead = "350Mi"
 )
 
 var (
@@ -95,7 +99,20 @@ var (
 	kataNodeLabels = map[string]string{
 		"feature.node.kubernetes.io/runtime.kata": "true",
 	}
+
+	// GPU labels that extend the base kataNodeLabels
+	nvidiaGPUNodeLabels = merge(kataNodeLabels, map[string]string{
+		"nvidia.com/gpu.present":                      "true",
+		"nvidia.com/gpu.deploy.vfio-manager":          "true",
+		"nvidia.com/gpu.deploy.sandbox-device-plugin": "true",
+	})
 )
+
+func merge(base map[string]string, extra map[string]string) map[string]string {
+	res := maps.Clone(base)
+	maps.Copy(res, extra)
+	return res
+}
 
 // +kubebuilder:rbac:groups=kataconfiguration.openshift.io,resources=kataconfigs;kataconfigs/finalizers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kataconfiguration.openshift.io,resources=kataconfigs/status,verbs=get;update;patch
@@ -2315,6 +2332,20 @@ func (r *KataConfigOpenShiftReconciler) postKataInstallation() (*ctrl.Result, er
 	if err != nil {
 		return &ctrl.Result{}, err
 	}
+
+	// creating kata-nvidia-gpu runtime class if node labels exist
+	err = r.createRuntimeClass(
+		kataNvidiaGPURuntimeClassName,
+		kataNvidiaGPURuntimeClassCpuOverhead,
+		kataNvidiaGPURuntimeClassMemOverhead,
+		"", /* nil extended resource overhead */
+		kataNvidiaGPURuntimeClassName /* reused for handler */,
+		nvidiaGPUNodeLabels,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	r.Log.Info("create Scc")
 	err = r.createScc()
 	if err != nil {
