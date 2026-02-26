@@ -2310,7 +2310,7 @@ func (r *KataConfigOpenShiftReconciler) postKataInstallation() (*ctrl.Result, er
 	r.resetInProgressCondition()
 	err := r.createRuntimeClass(kataRuntimeClassName, kataRuntimeClassCpuOverhead, kataRuntimeClassMemOverhead, "", kataRuntimeClassName, "")
 	if err != nil {
-		return &ctrl.Result{Requeue: true, RequeueAfter: 15 * time.Second}, err
+		return &ctrl.Result{}, err
 	}
 	r.Log.Info("create Scc")
 	err = r.createScc()
