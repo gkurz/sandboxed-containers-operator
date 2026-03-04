@@ -199,16 +199,6 @@ func (r *KataConfigOpenShiftReconciler) processKataConfigDeleteRequestDaemonSet(
 func (r *KataConfigOpenShiftReconciler) processKataConfigInstallRequestDaemonSet() (ctrl.Result, error) {
 	r.Log.Info("Kata installation in progress")
 
-	// Check Node Eligibility
-	if r.kataConfig.Spec.CheckNodeEligibility {
-		err := r.checkNodeEligibility()
-		if err != nil {
-			// If no nodes are found, requeue to check again for eligible nodes
-			r.Log.Error(err, "Failed to check Node eligibility for running Kata containers")
-			return ctrl.Result{}, err
-		}
-	}
-
 	// Label nodes with node-role.kubernetes.io/kata-oc
 	// This will be used by all DaemonSets
 	_, err := r.updateNodeLabels()

@@ -90,6 +90,13 @@ const (
 	kataRuntimeClassMemOverhead = "350Mi"
 )
 
+var (
+	// Base node labels for kata
+	kataNodeLabels = map[string]string{
+		"feature.node.kubernetes.io/runtime.kata": "true",
+	}
+)
+
 // +kubebuilder:rbac:groups=kataconfiguration.openshift.io,resources=kataconfigs;kataconfigs/finalizers,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=kataconfiguration.openshift.io,resources=kataconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=apps,resources=deployments;daemonsets;replicasets;statefulsets,verbs=get;list;watch;create;update;patch;delete
@@ -798,27 +805,6 @@ func (r *KataConfigOpenShiftReconciler) checkConvergedCluster() (bool, error) {
 
 }
 
-func (r *KataConfigOpenShiftReconciler) checkNodeEligibility() error {
-	r.Log.Info("Check Node Eligibility to run Kata containers")
-	// Check if node eligibility label exists
-
-	if r.kataConfig.Spec.EnablePeerPods {
-		r.Log.Info("enablePeerPods is true. Skipping since they are mutually exclusive.")
-		return nil
-	}
-	nodes, err := r.getNodesWithLabels(map[string]string{"feature.node.kubernetes.io/runtime.kata": "true"})
-	if err != nil {
-		r.Log.Error(err, "Error in getting list of nodes with label: feature.node.kubernetes.io/runtime.kata")
-		return err
-	}
-	if len(nodes.Items) == 0 {
-		err = fmt.Errorf("no Nodes with required labels found. Is NFD running?")
-		return err
-	}
-
-	return nil
-}
-
 func (r *KataConfigOpenShiftReconciler) getMcpName() (string, error) {
 	isConvergedCluster, err := r.checkConvergedCluster()
 	if err != nil {
@@ -898,6 +884,29 @@ func (r *KataConfigOpenShiftReconciler) createRuntimeClass(
 	extResOverhead string,
 	handler string,
 	additionalNodeLabels map[string]string) error {
+
+	if r.kataConfig.Spec.CheckNodeEligibility {
+
+		r.Log.Info("filtering nodes with labels", "labels", additionalNodeLabels)
+		selector, err := r.getKataConfigNodeSelectorAsSelector()
+		if err != nil {
+			return fmt.Errorf("failed to build node selector: %w", err)
+		}
+
+		nodes := &corev1.NodeList{}
+		listOpts := []client.ListOption{
+			client.MatchingLabelsSelector{Selector: selector},
+			client.MatchingLabels(additionalNodeLabels),
+		}
+		if err := r.Client.List(context.TODO(), nodes, listOpts...); err != nil {
+			return fmt.Errorf("failed to list nodes: %w", err)
+		}
+
+		if len(nodes.Items) == 0 {
+			r.Log.Info("skipping creating runtimeclass due to missing labels", "runtimeclass", runtimeClassName)
+			return nil
+		}
+	}
 
 	rc := func() *nodeapi.RuntimeClass {
 		podFixed := corev1.ResourceList{
@@ -1011,9 +1020,6 @@ func (r *KataConfigOpenShiftReconciler) getKataConfigNodeSelectorAsLabelSelector
 		nodeSelector = r.kataConfig.Spec.KataConfigPoolSelector.DeepCopy()
 	}
 
-	if r.kataConfig.Spec.CheckNodeEligibility {
-		nodeSelector = metav1.AddLabelToSelector(nodeSelector, "feature.node.kubernetes.io/runtime.kata", "true")
-	}
 	r.Log.Info("getKataConfigNodeSelectorAsLabelSelector()", "selector", nodeSelector)
 	return nodeSelector
 }
@@ -1213,16 +1219,6 @@ func (r *KataConfigOpenShiftReconciler) processKataConfigDeleteRequest() (ctrl.R
 
 func (r *KataConfigOpenShiftReconciler) processKataConfigInstallRequest() (ctrl.Result, error) {
 	r.Log.Info("Kata installation in progress")
-
-	// Check Node Eligibility
-	if r.kataConfig.Spec.CheckNodeEligibility {
-		err := r.checkNodeEligibility()
-		if err != nil {
-			// If no nodes are found, requeue to check again for eligible nodes
-			r.Log.Error(err, "Failed to check Node eligibility for running Kata containers")
-			return ctrl.Result{Requeue: true, RequeueAfter: time.Second * 20}, err
-		}
-	}
 
 	// If converged cluster, then MCP == master, otherwise "kata-oc" if it exists
 	machinePool, err := r.getMcpName()
@@ -2315,7 +2311,7 @@ func (r *KataConfigOpenShiftReconciler) deleteScc() error {
 func (r *KataConfigOpenShiftReconciler) postKataInstallation() (*ctrl.Result, error) {
 	r.Log.Info("create runtime class")
 	r.resetInProgressCondition()
-	err := r.createRuntimeClass(kataRuntimeClassName, kataRuntimeClassCpuOverhead, kataRuntimeClassMemOverhead, "", kataRuntimeClassName, nil)
+	err := r.createRuntimeClass(kataRuntimeClassName, kataRuntimeClassCpuOverhead, kataRuntimeClassMemOverhead, "", kataRuntimeClassName, kataNodeLabels)
 	if err != nil {
 		return &ctrl.Result{}, err
 	}
